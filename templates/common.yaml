@@ -5,6 +5,16 @@ metadata:
   labels:
     name: wireguard
 ---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: wg-secret
+  namespace: wireguard
+type: Opaque
+data:
+  # Generate and encode the server private key: `wg genkey | base64`
+  privatekey: VUFoNFRnbENDZE9SVlVxemxwTFhNcXR0eTZVZ3pNWVNoSnVUbDB4bnRHOD0K
+---
 kind: ConfigMap
 apiVersion: v1
 metadata:
@@ -15,11 +25,9 @@ data:
     [Interface]
     Address = 10.25.187.1/24
     ListenPort = 51820
-    PrivateKey = 
     SaveConfig = false
     MTU = 1280
-    PostUp = iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o eth0 -j TCPMSS --clamp-mss-to-pmtu
-    PostUp = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+    PostUp = wg set wg0 private-key /etc/wireguard/privatekey && iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN >    PostUp = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
     PostUp = iptables -A FORWARD -i %i -j ACCEPT
     PostDown = iptables -D FORWARD -i %i -j ACCEPT
     PostDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
@@ -27,9 +35,25 @@ data:
     PostUp = sysctl -q -w net.ipv4.ip_forward=1
     PostDown = sysctl -q -w net.ipv4.ip_forward=0
     [Peer]
-    PublicKey = 
-    PresharedKey = 
-    AllowedIPs = 10.25.187.10/32
+    PublicKey = neOCa2pDgLXIreqG6lWDzZuImFhR6YgXhJ0w2Vek0wc=
+    AllowedIPs = 10.25.187.2/32
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: wireguard
+  namespace: wireguard
+  labels:
+    app: wireguard
+spec:
+  type: LoadBalancer
+  ports:
+  - name: wg
+    protocol: UDP
+    port: 51820
+    targetPort: 51820
+  selector:
+    app: wireguard
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -46,8 +70,6 @@ spec:
       labels:
         app: wireguard
     spec:
-      nodeSelector:
-        hehe: node01
       initContainers:
         - name: sysctls
           image: busybox
@@ -59,6 +81,10 @@ spec:
       containers:
         - name: wireguard
           image: masipcat/wireguard-go:latest
+          command:
+          - sh
+          - -c
+          - echo "Public key '$(wg pubkey < /etc/wireguard/privatekey)'" && /entrypoint.sh
           ports:
           - containerPort: 51820
             protocol: UDP
@@ -81,44 +107,13 @@ spec:
           - name: cfgmap
             mountPath: /etc/wireguard/wg0.conf
             subPath: wg0.conf
+          - name: secret
+            mountPath: /etc/wireguard/privatekey
+            subPath: privatekey
       volumes:
       - name: cfgmap
         configMap:
           name: wg-configmap
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  annotations:
-    kubernetes.io/ingress.class: nginx
-  name: wg-ingress
-  namespace: wireguard
-spec:
-  rules:
-  - host: "{{ .Values.FQDN }}"
-    http:
-      paths:
-      - pathType: Prefix
-        path: "/"
-        backend:
-          service:
-            name: wg-service
-            port:
-              number: 51820
----
-kind: Service
-apiVersion: v1
-metadata:
-  name: wg-service
-  namespace: wireguard
-  labels:
-    app: wireguard
-spec:
-  type: LoadBalancer
-  ports:
-  - name: wg
-    protocol: UDP
-    port: 51820
-    targetPort: 51820
-  selector:
-    app: wg-app
+      - name: secret
+        secret:
+          secretName: wg-secret
